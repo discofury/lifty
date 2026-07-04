@@ -4,6 +4,8 @@ import base64
 import json
 import logging
 import os
+import re
+import statistics
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -16,12 +18,21 @@ from .prompts import LIFTS, SYSTEM_PROMPT
 log = logging.getLogger("lifty")
 
 MODEL = os.environ.get("LIFTY_MODEL", "claude-opus-4-8")
-MAX_FRAMES = int(os.environ.get("LIFTY_MAX_FRAMES", "16"))
-# Long-edge pixel size for extracted frames. ~900px keeps per-frame token cost
-# moderate while leaving enough detail to judge positions.
-FRAME_EDGE = int(os.environ.get("LIFTY_FRAME_EDGE", "896"))
+MAX_FRAMES = int(os.environ.get("LIFTY_MAX_FRAMES", "12"))
+# Long-edge pixel size for extracted frames. Image tokens scale with pixel
+# area (~area/750), so 768px costs ~25% less per frame than 896px while still
+# resolving body/bar positions.
+FRAME_EDGE = int(os.environ.get("LIFTY_FRAME_EDGE", "768"))
 # Deliberate cost cap per analysis (includes thinking tokens).
 MAX_TOKENS = int(os.environ.get("LIFTY_MAX_TOKENS", "16000"))
+# Thinking/output spend: low | medium | high. Medium is plenty for a set
+# review; raise to high if you want deeper analysis per set.
+EFFORT = os.environ.get("LIFTY_EFFORT", "medium")
+# Motion-trim the clip so frames are spent on the lift, not on walking up to
+# the bar. Set LIFTY_TRIM=0 to always sample the whole clip.
+TRIM = os.environ.get("LIFTY_TRIM", "1") != "0"
+# Seconds kept either side of the detected movement.
+TRIM_MARGIN = 0.75
 
 _client = anthropic.Anthropic()
 
@@ -57,9 +68,69 @@ def _probe_duration(video_path: Path) -> float:
         raise VideoError("Could not determine video duration.") from exc
 
 
+_METADATA_RE = re.compile(
+    r"pts_time:(?P<ts>[\d.]+).*?lavfi\.signalstats\.YDIF=(?P<ydif>[\d.eE+-]+)",
+    re.DOTALL,
+)
+
+
+def _detect_active_window(video_path: Path, duration: float) -> tuple[float, float] | None:
+    """Find the time window that contains the movement.
+
+    Samples the clip at 10 Hz at thumbnail size and reads ffmpeg's per-frame
+    temporal-difference statistic (YDIF). A stationary camera watching a
+    stationary lifter produces a low, flat baseline; the set itself stands
+    out clearly above it. Returns (start, end) in seconds, or None when no
+    clear active region exists (handheld footage, constant motion, or a clip
+    that is all lift) - in which case the caller samples the whole clip.
+    """
+    proc = _run(
+        [
+            "ffmpeg", "-v", "error", "-i", str(video_path),
+            "-vf", "fps=10,scale=160:-2,signalstats,"
+                   "metadata=print:key=lavfi.signalstats.YDIF:file=-",
+            "-f", "null", "-",
+        ],
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        return None
+
+    samples: list[tuple[float, float]] = []
+    for match in _METADATA_RE.finditer(proc.stdout):
+        try:
+            samples.append((float(match.group("ts")), float(match.group("ydif"))))
+        except ValueError:
+            continue
+    if len(samples) < 10:
+        return None
+
+    # Smooth over ~0.5s to ignore single-frame flicker.
+    values = [v for _, v in samples]
+    smoothed = [
+        sum(values[max(0, i - 2): i + 3]) / len(values[max(0, i - 2): i + 3])
+        for i in range(len(values))
+    ]
+    baseline = statistics.median(smoothed)
+    peak = max(smoothed)
+    # No clear separation between "idle" and "moving" - don't trim.
+    if peak < 1.0 or peak < 3 * baseline:
+        return None
+
+    threshold = baseline + 0.2 * (peak - baseline)
+    active = [samples[i][0] for i, v in enumerate(smoothed) if v >= threshold]
+    start = max(0.0, active[0] - TRIM_MARGIN)
+    end = min(duration, active[-1] + TRIM_MARGIN)
+    if end - start < 1.5 or (end - start) > 0.9 * duration:
+        return None
+    return (start, end)
+
+
 def extract_frames(video_path: Path) -> list[tuple[float, bytes]]:
     """Extract up to MAX_FRAMES evenly spaced JPEG frames.
 
+    When motion trimming is enabled, frames are spread over just the part of
+    the clip where movement happens, so none are wasted on setup/rest time.
     Returns a list of (timestamp_seconds, jpeg_bytes) in chronological order.
     """
     duration = _probe_duration(video_path)
@@ -71,14 +142,26 @@ def extract_frames(video_path: Path) -> list[tuple[float, bytes]]:
             "(ideally 5-30 seconds) and try again."
         )
 
-    n = min(MAX_FRAMES, max(4, int(duration * 4)))  # ≥4 fps worth for short clips
+    start, end = 0.0, duration
+    if TRIM:
+        window = _detect_active_window(video_path, duration)
+        if window:
+            start, end = window
+            log.info(
+                "Motion trim: using %.1fs-%.1fs of %.1fs clip", start, end, duration
+            )
+    span = end - start
+
+    n = min(MAX_FRAMES, max(4, int(span * 4)))  # ≥4 fps worth for short spans
     with tempfile.TemporaryDirectory() as tmp:
         out_pattern = str(Path(tmp) / "frame_%03d.jpg")
+        seek = ["-ss", f"{start:.3f}"] if start > 0 else []
         proc = _run(
             [
-                "ffmpeg", "-v", "error", "-i", str(video_path),
+                "ffmpeg", "-v", "error", *seek, "-i", str(video_path),
+                "-t", f"{span:.3f}",
                 "-vf",
-                f"fps={n}/{duration:.4f},"
+                f"fps={n}/{span:.4f},"
                 f"scale={FRAME_EDGE}:{FRAME_EDGE}:force_original_aspect_ratio=decrease",
                 "-frames:v", str(n),
                 "-q:v", "3",
@@ -94,9 +177,9 @@ def extract_frames(video_path: Path) -> list[tuple[float, bytes]]:
         if not files:
             raise VideoError("No frames could be extracted from the video.")
 
-        step = duration / len(files)
+        step = span / len(files)
         return [
-            (round((i + 0.5) * step, 2), f.read_bytes())
+            (round(start + (i + 0.5) * step, 2), f.read_bytes())
             for i, f in enumerate(files)
         ]
 
@@ -158,6 +241,7 @@ def stream_feedback(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         thinking={"type": "adaptive"},
+        output_config={"effort": EFFORT},
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content}],
     ) as stream:
