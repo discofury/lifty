@@ -32,9 +32,39 @@ No database, no accounts — one Python process.
 
 ## Deploying
 
-### Option 1 — Run locally, use from your phone over Wi-Fi (simplest)
+### Option 1 — Cloud host (recommended: works from any gym, phone only)
 
-Works when your phone and the machine running Lifty are on the same network (home gym, or a laptop you bring to the gym).
+Deploy Lifty to a container host and use it from your phone over cellular — no laptop, no home server. The repo's Dockerfile deploys anywhere that runs containers, and these hosts give you HTTPS automatically.
+
+Set **two** secrets: your Anthropic API key, and a `LIFTY_ACCESS_KEY` of your choosing. The access key is what stops strangers who find the URL from uploading videos billed to your API key — the first time you open the app on your phone it asks for the key, then remembers it.
+
+**Fly.io:**
+
+```bash
+fly launch --no-deploy          # accept defaults; it detects the Dockerfile
+fly secrets set ANTHROPIC_API_KEY=sk-ant-... LIFTY_ACCESS_KEY=<pick-a-long-random-string>
+fly deploy
+```
+
+**Railway:** create a project from the repo, set the `ANTHROPIC_API_KEY` and `LIFTY_ACCESS_KEY` variables, and it builds from the Dockerfile automatically.
+
+**Any VPS:** run the Docker image behind a reverse proxy with HTTPS (Caddy does this in two lines of config), with both environment variables set.
+
+Then on your iPhone: open the app's URL in Safari, enter the access key when prompted, and tap share → **Add to Home Screen** to make it feel like a native app.
+
+> ⚠️ Don't set `LIFTY_ACCESS_KEY` on a plain-HTTP deployment — the key would travel unencrypted. Fly.io and Railway serve HTTPS out of the box, so this only matters on a bare VPS.
+
+### Option 2 — Home server + Tailscale (no public hosting)
+
+If you have an always-on machine at home: run Lifty there and reach it securely from your phone anywhere, with zero exposed ports and no access key needed.
+
+1. Run Lifty on the home machine (Option 3 or Docker, below).
+2. Install [Tailscale](https://tailscale.com) on that machine and on your iPhone, signed into the same account.
+3. On your phone open `http://<machine-tailscale-name>:8000`.
+
+### Option 3 — Run locally, use over Wi-Fi (home gym)
+
+Works when your phone and the machine running Lifty are on the same network.
 
 ```bash
 git clone <this-repo> && cd lifty
@@ -47,54 +77,18 @@ export ANTHROPIC_API_KEY=sk-ant-...
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Find your machine's LAN IP (`ipconfig getifaddr en0` on macOS, `hostname -I` on Linux), then on your iPhone open:
+Find your machine's LAN IP (`ipconfig getifaddr en0` on macOS, `hostname -I` on Linux), then on your iPhone open `http://<your-lan-ip>:8000`. Video upload via the file picker works fine over plain HTTP — no certificate needed.
 
-```
-http://<your-lan-ip>:8000
-```
-
-Tap the share button in Safari → **Add to Home Screen** to make it feel like an app. Video upload via the file picker works fine over plain HTTP — no certificate needed.
-
-### Option 2 — Docker
+**Docker equivalent:**
 
 ```bash
 docker build -t lifty .
 docker run -p 8000:8000 -e ANTHROPIC_API_KEY=sk-ant-... lifty
 ```
 
-Then open `http://<host-ip>:8000` on your phone.
-
-### Option 3 — Home server + Tailscale (use it at any gym, over cellular)
-
-The best setup for a commercial gym: run Lifty on a machine at home and reach it securely from your phone anywhere, with zero exposed ports.
-
-1. Run Lifty on the home machine (Option 1 or 2).
-2. Install [Tailscale](https://tailscale.com) on that machine and on your iPhone, signed into the same account.
-3. On your phone open `http://<machine-tailscale-name>:8000`.
-
-This keeps your API key at home and needs no public hosting.
-
-### Option 4 — Cloud host (Fly.io / Railway / any VPS)
-
-The repo's Dockerfile deploys anywhere that runs containers.
-
-**Fly.io:**
-
-```bash
-fly launch --no-deploy          # accept defaults; it detects the Dockerfile
-fly secrets set ANTHROPIC_API_KEY=sk-ant-...
-fly deploy
-```
-
-**Railway:** create a project from the repo, set the `ANTHROPIC_API_KEY` variable, and it builds from the Dockerfile automatically.
-
-**Any VPS:** run the Docker image behind a reverse proxy (Caddy gives you automatic HTTPS in two lines of config).
-
-> ⚠️ A public deployment has **no authentication** — anyone with the URL can upload videos billed to your API key. Put it behind basic auth in your reverse proxy, restrict it to your IP, or prefer the Tailscale option.
-
 ### Verifying the deployment
 
-Open `http://<host>:8000/api/health` — it reports whether `ffmpeg` is on the PATH and which model is configured. Then upload a test clip.
+Open `https://<host>/api/health` — it reports whether `ffmpeg` is on the PATH, which model is configured, and whether access-key auth is on (`"auth": "access_key"`) or off (`"auth": "open"`). Then upload a test clip.
 
 ---
 
@@ -112,6 +106,7 @@ Everything is optional, set via environment variables:
 | Variable | Default | Meaning |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | **Required.** Your Anthropic API key. |
+| `LIFTY_ACCESS_KEY` | *(unset — no auth)* | Shared access key. When set, every API request must present it; the web page asks once and remembers it. Set this on any public deployment. |
 | `LIFTY_MODEL` | `claude-opus-4-8` | Claude model used for analysis. |
 | `LIFTY_MAX_FRAMES` | `16` | Max frames extracted per video. |
 | `LIFTY_FRAME_EDGE` | `896` | Long-edge pixel size of extracted frames. |

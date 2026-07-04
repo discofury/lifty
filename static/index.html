@@ -122,7 +122,27 @@
     localStorage.setItem("lifty_session", sessionId);
   }
 
-  fetch("/api/lifts").then(function (r) { return r.json(); }).then(function (lifts) {
+  // Optional access key (servers started with LIFTY_ACCESS_KEY return 401
+  // without it). Asked for once, remembered in localStorage.
+  function apiFetch(url, opts) {
+    opts = opts || {};
+    function attempt() {
+      opts.headers = { "X-Lifty-Key": localStorage.getItem("lifty_key") || "" };
+      return fetch(url, opts);
+    }
+    return attempt().then(function (r) {
+      if (r.status !== 401) return r;
+      var entered = window.prompt("This server needs an access key:");
+      if (!entered || !entered.trim()) return r;
+      localStorage.setItem("lifty_key", entered.trim());
+      return attempt();
+    });
+  }
+
+  apiFetch("/api/lifts").then(function (r) {
+    if (!r.ok) throw new Error(r.status === 401 ? "Access key required — reload to try again." : "Could not load lifts (" + r.status + ")");
+    return r.json();
+  }).then(function (lifts) {
     lifts.forEach(function (lift) {
       var btn = document.createElement("button");
       btn.className = "lift-btn";
@@ -138,6 +158,8 @@
     var last = localStorage.getItem("lifty_lift");
     var idx = lifts.findIndex(function (l) { return l.key === last; });
     if (idx >= 0) liftsEl.children[idx].click();
+  }).catch(function (err) {
+    setStatus('<span class="error">' + err.message + "</span>");
   });
 
   videoInput.onchange = function () {
@@ -200,7 +222,7 @@
     form.append("session_id", sessionId);
 
     try {
-      var resp = await fetch("/api/analyze", { method: "POST", body: form });
+      var resp = await apiFetch("/api/analyze", { method: "POST", body: form });
       if (!resp.ok) {
         var detail = "Request failed (" + resp.status + ")";
         try { detail = (await resp.json()).detail || detail; } catch (e) {}

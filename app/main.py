@@ -1,6 +1,8 @@
 """Lifty — between-sets technique feedback for Olympic weightlifting."""
 
 import logging
+import os
+import secrets
 import shutil
 import tempfile
 import threading
@@ -8,7 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 import anthropic
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from . import analysis
@@ -19,6 +21,18 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("lifty")
 
 app = FastAPI(title="Lifty")
+
+# Optional shared access key for public deployments. When LIFTY_ACCESS_KEY is
+# set, every /api request must send it in the X-Lifty-Key header; the web page
+# prompts for it once and remembers it. When unset (LAN/Tailscale use), all
+# requests are allowed.
+ACCESS_KEY = os.environ.get("LIFTY_ACCESS_KEY", "")
+
+
+def require_key(x_lifty_key: str = Header(default="", alias="X-Lifty-Key")) -> None:
+    if ACCESS_KEY and not secrets.compare_digest(x_lifty_key, ACCESS_KEY):
+        raise HTTPException(status_code=401, detail="Invalid or missing access key")
+
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 MAX_UPLOAD_BYTES = 300 * 1024 * 1024  # iPhone 4K clips are big; keep clips short anyway
@@ -51,14 +65,14 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
-@app.get("/api/lifts")
+@app.get("/api/lifts", dependencies=[Depends(require_key)])
 def lifts() -> JSONResponse:
     return JSONResponse(
         [{"key": key, "label": lift["label"]} for key, lift in LIFTS.items()]
     )
 
 
-@app.post("/api/analyze")
+@app.post("/api/analyze", dependencies=[Depends(require_key)])
 async def analyze(
     video: UploadFile = File(...),
     lift: str = Form(...),
@@ -135,4 +149,11 @@ def health() -> JSONResponse:
         analysis._client.api_key  # noqa: B018 — presence check only
     except Exception:
         problems.append("Anthropic client not configured")
-    return JSONResponse({"ok": not problems, "problems": problems, "model": analysis.MODEL})
+    return JSONResponse(
+        {
+            "ok": not problems,
+            "problems": problems,
+            "model": analysis.MODEL,
+            "auth": "access_key" if ACCESS_KEY else "open",
+        }
+    )
