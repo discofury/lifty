@@ -17,7 +17,7 @@ Film a set on your iPhone, upload it from your browser, and get coach-style feed
 
 1. You record a short clip (5–30 s) of a set on your phone and upload it via the web page.
 2. The server profiles the clip's motion with `ffmpeg`, trims off the idle time before and after the set (walking up, standing around), and extracts up to 12 evenly spaced frames from just the movement.
-3. The frames — labelled with timestamps — go to **Claude Opus 4.8** together with a coaching system prompt and a lift-specific technical checklist.
+3. The frames — labelled with timestamps — go to **Claude Sonnet 5** together with a coaching system prompt and a lift-specific technical checklist.
 4. Feedback streams back to your phone as it's written, formatted for reading during a rest period.
 5. The app remembers the last feedback per lift for your browser session, so the next analysis checks whether you actually acted on the previous cue.
 
@@ -107,7 +107,7 @@ Everything is optional, set via environment variables:
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | **Required.** Your Anthropic API key. |
 | `LIFTY_ACCESS_KEY` | *(unset — no auth)* | Shared access key. When set, every API request must present it; the web page asks once and remembers it. Set this on any public deployment. |
-| `LIFTY_MODEL` | `claude-opus-4-8` | Claude model used for analysis. |
+| `LIFTY_MODEL` | `claude-sonnet-5` | Claude model used for analysis. |
 | `LIFTY_MAX_FRAMES` | `12` | Max frames extracted per video. |
 | `LIFTY_FRAME_EDGE` | `768` | Long-edge pixel size of extracted frames. Image tokens scale with pixel area. |
 | `LIFTY_EFFORT` | `medium` | Thinking/output spend: `low`, `medium`, or `high`. `medium` reviews a set well; `high` digs deeper at higher cost. |
@@ -116,7 +116,7 @@ Everything is optional, set via environment variables:
 
 ## Cost
 
-With the defaults (motion trim + 12 frames at ~768 px + `medium` effort), one analysis is roughly 6–8 k input tokens and 1–2 k output/thinking tokens — about **$0.05–0.10 per set** on Claude Opus 4.8.
+With the defaults (motion trim + 12 frames at ~768 px + `medium` effort), one analysis is roughly 6–9 k input tokens and 1–2 k output/thinking tokens — about **$0.03–0.06 per set** on Claude Sonnet 5 ($3/$15 per Mtok; introductory $2/$10 pricing through 2026-08-31 makes it cheaper still).
 
 Tuning knobs, in order of impact:
 
@@ -124,7 +124,7 @@ Tuning knobs, in order of impact:
 - `LIFTY_FRAME_EDGE` — token cost per frame scales with pixel **area**, so 640 px costs ~30% less than 768 px.
 - `LIFTY_MAX_FRAMES` — fewer frames, less temporal detail across the reps.
 - `LIFTY_EFFORT=low` — cheapest feedback; fine for quick checks.
-- `LIFTY_MODEL=claude-sonnet-5` — a cheaper model tier ($3/$15 vs $5/$25 per Mtok) at some cost in analysis quality; your call.
+- `LIFTY_MODEL=claude-opus-4-8` — the other direction: a stronger, pricier model tier ($5/$25 per Mtok) if you want the deepest analysis.
 
 ## Adding a lift
 

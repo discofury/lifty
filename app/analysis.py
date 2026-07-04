@@ -17,7 +17,7 @@ from .prompts import LIFTS, SYSTEM_PROMPT
 
 log = logging.getLogger("lifty")
 
-MODEL = os.environ.get("LIFTY_MODEL", "claude-opus-4-8")
+MODEL = os.environ.get("LIFTY_MODEL", "claude-sonnet-5")
 MAX_FRAMES = int(os.environ.get("LIFTY_MAX_FRAMES", "12"))
 # Long-edge pixel size for extracted frames. Image tokens scale with pixel
 # area (~area/750), so 768px costs ~25% less per frame than 896px while still
